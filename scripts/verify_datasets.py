@@ -1,6 +1,3 @@
-
-"""Read-only verification of the raw ISIC 2016 and PH2 datasets."""
-
 from __future__ import annotations
 
 import argparse
