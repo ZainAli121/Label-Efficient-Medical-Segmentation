@@ -2,3 +2,6 @@ step.md
 desc.md
 data/
 venv/
+outputs/
+__pycache__
+
