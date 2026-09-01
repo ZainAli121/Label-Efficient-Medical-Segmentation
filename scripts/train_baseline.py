@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train the 25-image, seed-42, no-augmentation ISIC baseline."""
+"""Train a 25-image, seed-42 ISIC pilot with selectable augmentation."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
+from src.augmentations import AUGMENTATION_MODES, SegmentationAugmentation
 from src.datasets import SegmentationDataset
 from src.models import LightweightUNet
 from src.training import BCEDiceLoss, run_epoch, seed_worker, set_deterministic
@@ -42,6 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--learning-rate", type=float, default=DEFAULT_LEARNING_RATE)
     parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--augmentation", choices=AUGMENTATION_MODES, default="none")
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -56,7 +58,9 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def make_loaders(batch_size: int, num_workers: int) -> tuple[DataLoader, DataLoader, SegmentationDataset]:
+def make_loaders(
+    batch_size: int, num_workers: int, augmentation: str
+) -> tuple[DataLoader, DataLoader, SegmentationDataset]:
     train_manifest = (
         REPOSITORY_ROOT
         / "data"
@@ -67,7 +71,11 @@ def make_loaders(batch_size: int, num_workers: int) -> tuple[DataLoader, DataLoa
         / "train_25.csv"
     )
     val_manifest = REPOSITORY_ROOT / "data" / "processed" / "manifests" / "isic_val.csv"
-    train_dataset = SegmentationDataset(train_manifest, REPOSITORY_ROOT)
+    train_dataset = SegmentationDataset(
+        train_manifest,
+        REPOSITORY_ROOT,
+        augmentation=SegmentationAugmentation(augmentation),
+    )
     val_dataset = SegmentationDataset(val_manifest, REPOSITORY_ROOT)
     if len(train_dataset) != EXPECTED_TRAIN_SAMPLES:
         raise ValueError(f"Expected {EXPECTED_TRAIN_SAMPLES} training samples, found {len(train_dataset)}")
@@ -143,7 +151,9 @@ def main() -> int:
     history_path = output_dir / "history.json"
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    train_loader, val_loader, val_dataset = make_loaders(args.batch_size, args.num_workers)
+    train_loader, val_loader, val_dataset = make_loaders(
+        args.batch_size, args.num_workers, args.augmentation
+    )
     model = LightweightUNet(base_channels=16).to(device)
     parameter_count = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
     criterion = BCEDiceLoss()
@@ -159,6 +169,7 @@ def main() -> int:
     epochs_without_improvement = 0
 
     print(f"Device: {device}")
+    print(f"Augmentation: {args.augmentation}")
     print(f"Trainable parameters: {parameter_count:,}")
     for epoch in range(1, args.epochs + 1):
         train_metrics = run_epoch(model, train_loader, criterion, device, optimizer)
@@ -205,7 +216,10 @@ def main() -> int:
                 **history,
                 "best_epoch": best_epoch,
                 "best_validation_dice": best_dice,
+                "best_validation_iou": final_validation.iou,
                 "best_checkpoint_validation_iou": final_validation.iou,
+                "epochs_trained": epochs_trained,
+                "augmentation": args.augmentation,
             },
             handle,
             indent=2,

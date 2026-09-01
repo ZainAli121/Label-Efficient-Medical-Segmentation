@@ -11,6 +11,8 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
+from src.augmentations import SegmentationAugmentation
+
 
 @dataclass(frozen=True)
 class SegmentationSample:
@@ -29,9 +31,15 @@ class SegmentationDataset(Dataset[tuple[torch.Tensor, torch.Tensor, str]]):
 
     REQUIRED_COLUMNS = {"sample_id", "image_path", "mask_path"}
 
-    def __init__(self, manifest_path: Path, repository_root: Path) -> None:
+    def __init__(
+        self,
+        manifest_path: Path,
+        repository_root: Path,
+        augmentation: SegmentationAugmentation | None = None,
+    ) -> None:
         self.manifest_path = Path(manifest_path)
         self.repository_root = Path(repository_root)
+        self.augmentation = augmentation
         self.samples = self._read_manifest()
 
     def _read_manifest(self) -> list[SegmentationSample]:
@@ -74,9 +82,13 @@ class SegmentationDataset(Dataset[tuple[torch.Tensor, torch.Tensor, str]]):
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor, str]:
         sample = self.samples[index]
         with Image.open(sample.image_path) as image_file:
-            image = np.asarray(image_file.convert("RGB"), dtype=np.float32).copy() / 255.0
+            image_pil = image_file.convert("RGB")
         with Image.open(sample.mask_path) as mask_file:
-            mask = np.asarray(mask_file.convert("L"), dtype=np.uint8).copy()
+            mask_pil = mask_file.convert("L")
+        if self.augmentation is not None:
+            image_pil, mask_pil = self.augmentation(image_pil, mask_pil)
+        image = np.asarray(image_pil, dtype=np.float32).copy() / 255.0
+        mask = np.asarray(mask_pil, dtype=np.uint8).copy()
         if image.shape[:2] != mask.shape:
             raise ValueError(
                 f"Dimension mismatch for {sample.sample_id}: image={image.shape[:2]}, mask={mask.shape}"
