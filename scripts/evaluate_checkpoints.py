@@ -48,6 +48,8 @@ RESULT_FIELDS = (
     "iou",
     "precision",
     "recall",
+    "undefined_precision_images",
+    "undefined_recall_images",
     "checkpoint_path",
 )
 SUMMARY_FIELDS = (
@@ -170,6 +172,8 @@ def evaluate_model(
     """Return macro metrics: calculate each image independently, then average."""
     model.eval()
     totals = {"dice": 0.0, "iou": 0.0, "precision": 0.0, "recall": 0.0}
+    undefined_precision_images = 0
+    undefined_recall_images = 0
     sample_count = 0
     with torch.inference_mode():
         for images, masks, _ in loader:
@@ -181,19 +185,38 @@ def evaluate_model(
             predicted_positive = predictions.sum(dim=dimensions).float()
             actual_positive = targets.sum(dim=dimensions).float()
             union = predicted_positive + actual_positive - true_positive
+            # Dice/IoU retain the established smoothing convention. Precision and
+            # recall use their exact definitions; an undefined zero-denominator
+            # value is explicitly assigned 0.0 and counted for reporting.
+            precision_defined = predicted_positive > 0
+            recall_defined = actual_positive > 0
             metrics = {
                 "dice": (2.0 * true_positive + SMOOTH)
                 / (predicted_positive + actual_positive + SMOOTH),
                 "iou": (true_positive + SMOOTH) / (union + SMOOTH),
-                "precision": (true_positive + SMOOTH) / (predicted_positive + SMOOTH),
-                "recall": (true_positive + SMOOTH) / (actual_positive + SMOOTH),
+                "precision": torch.where(
+                    precision_defined,
+                    true_positive / predicted_positive.clamp_min(1.0),
+                    torch.zeros_like(true_positive),
+                ),
+                "recall": torch.where(
+                    recall_defined,
+                    true_positive / actual_positive.clamp_min(1.0),
+                    torch.zeros_like(true_positive),
+                ),
             }
+            undefined_precision_images += int((~precision_defined).sum().item())
+            undefined_recall_images += int((~recall_defined).sum().item())
             for name, values in metrics.items():
                 totals[name] += values.sum().item()
             sample_count += images.size(0)
     if sample_count == 0:
         raise ValueError("Test DataLoader produced no samples")
-    return {name: value / sample_count for name, value in totals.items()}
+    return {
+        **{name: value / sample_count for name, value in totals.items()},
+        "undefined_precision_images": undefined_precision_images,
+        "undefined_recall_images": undefined_recall_images,
+    }
 
 
 def write_csv(path: Path, fields: Iterable[str], rows: list[dict[str, Any]]) -> None:
